@@ -1,0 +1,203 @@
+This is the "Golden Package" for your thesis. It includes every file you need to go from a raw CSV to a fully trained AI detector.
+
+Follow these steps to set up your **GitHub** and run your project on the **University PC**.
+
+---
+
+### **1. Create Your GitHub Repository**
+
+1. Create a new repository named `Thesis-Hallucination-Detection`.
+2. Upload the following **four files** (create them as `.txt`, `.py`, or `.md` as labeled).
+3. **DO NOT** upload `Merge_dataset.csv` directly if it's over 100MB (GitHub's limit). If it is too large, move it to the university PC using a USB drive or Google Drive instead.
+
+---
+
+### **File 1: `requirements.txt**`
+
+This file ensures the university PC installs the exact software versions you used.
+
+```text
+transformers[torch]
+datasets
+scikit-learn
+pandas
+accelerate
+numpy
+
+```
+
+---
+
+### **File 2: `train.py**`
+
+This is the core engine. It splits your data, trains DistilBERT, and saves the best model.
+
+```python
+import pandas as pd
+import torch
+import os
+from datasets import Dataset
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, Trainer
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, f1_score, precision_recall_fscore_support
+
+# --- CONFIGURATION ---
+DATA_PATH = "Merge_dataset.csv"
+MODEL_NAME = "distilbert-base-uncased"
+OUTPUT_DIR = "./hallucination_model"
+
+def compute_metrics(pred):
+    labels = pred.label_ids
+    preds = pred.predictions.argmax(-1)
+    precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average='binary')
+    acc = accuracy_score(labels, preds)
+    return {'accuracy': acc, 'f1': f1, 'precision': precision, 'recall': recall}
+
+print("--- 📂 Stage 1: Loading & Splitting ---")
+df = pd.read_csv(DATA_PATH)
+
+# Split logic: 80% Train, 10% Validation, 10% Test (Holdout)
+train_df, temp_df = train_test_split(df, test_size=0.2, random_state=42)
+val_df, test_df = train_test_split(temp_df, test_size=0.5, random_state=42)
+
+# Save the test set separately so we can use it in test.py
+test_df.to_csv("test_holdout.csv", index=False)
+
+train_ds = Dataset.from_pandas(train_df)
+val_ds = Dataset.from_pandas(val_df)
+
+print("--- 🧩 Stage 2: Tokenization ---")
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+
+def tokenize_fn(batch):
+    return tokenizer(batch["text"], padding="max_length", truncation=True, max_length=512)
+
+train_enc = train_ds.map(tokenize_fn, batched=True)
+val_enc = val_ds.map(tokenize_fn, batched=True)
+
+print("--- 🏗️ Stage 3: Model Setup ---")
+model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME, num_labels=2)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model.to(device)
+
+# Hyperparameters
+args = TrainingArguments(
+    output_dir=OUTPUT_DIR,
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    learning_rate=2e-5,
+    per_device_train_batch_size=16,
+    num_train_epochs=3,
+    weight_decay=0.01,
+    load_best_model_at_end=True,
+    logging_dir='./logs',
+)
+
+trainer = Trainer(
+    model=model,
+    args=args,
+    train_dataset=train_enc,
+    eval_dataset=val_enc,
+    compute_metrics=compute_metrics,
+)
+
+print(f"--- 🚀 Stage 4: Training on {device.upper()} ---")
+trainer.train()
+
+# Final Save
+trainer.save_model(OUTPUT_DIR)
+tokenizer.save_pretrained(OUTPUT_DIR)
+print(f"✅ Training Complete! Model saved to {OUTPUT_DIR}")
+
+```
+
+---
+
+### **File 3: `test.py**`
+
+Use this once training is done to generate your thesis results.
+
+```python
+import torch
+import pandas as pd
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from sklearn.metrics import classification_report
+
+MODEL_PATH = "./hallucination_model"
+tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+model = AutoModelForSequenceClassification.from_pretrained(MODEL_PATH)
+model.eval()
+
+def predict(text):
+    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=512, padding=True)
+    with torch.no_grad():
+        outputs = model(**inputs)
+    probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
+    prediction = torch.argmax(probs).item()
+    return prediction, probs[0][prediction].item()
+
+# 1. Automated Test on Holdout Data
+print("--- 📊 Evaluation on Unseen Data ---")
+try:
+    test_df = pd.read_csv("test_holdout.csv")
+    test_df['pred'] = test_df['text'].apply(lambda x: predict(str(x))[0])
+    print(classification_report(test_df['label'], test_df['pred'], target_names=['Faithful (0)', 'Hallucination (1)']))
+except FileNotFoundError:
+    print("test_holdout.csv not found. Run train.py first.")
+
+# 2. Manual Testing
+print("\n--- ✍️ Interactive Manual Test ---")
+while True:
+    txt = input("Enter text to check (or 'q' to quit): ")
+    if txt.lower() == 'q': break
+    label, conf = predict(txt)
+    result = "HALLUCINATION" if label == 1 else "FAITHFUL"
+    print(f"Result: {result} ({conf:.2%} confidence)\n")
+
+```
+
+---
+
+### **File 4: `README.md**`
+
+This is the instruction manual for your repository.
+
+```markdown
+# Hallucination Detection Thesis
+
+This project fine-tunes DistilBERT to detect hallucinations in LLM responses.
+
+## Setup
+1. Install dependencies: `pip install -r requirements.txt`
+2. Ensure `Merge_dataset.csv` is in this folder.
+
+## Execution
+- **Train**: `python train.py` (Creates the model folder)
+- **Test**: `python test.py` (Evaluates accuracy and allows manual testing)
+
+## Dataset
+- Total rows: 68,298
+- Balance: 50% Hallucination / 50% Faithful
+
+```
+
+---
+
+### **How to Run it at the University (Step-by-Step)**
+
+1. **Login** to the University PC.
+2. **Clone** your GitHub repo:
+`git clone https://github.com/[YOUR_USERNAME]/Thesis-Hallucination-Detection.git`
+3. **Enter** the folder:
+`cd Thesis-Hallucination-Detection`
+4. **Copy** your `Merge_dataset.csv` into this folder.
+5. **Install** everything:
+`pip install -r requirements.txt`
+6. **Run Training**:
+`python train.py`
+*(Wait for it to finish. If they have a GPU, it will be fast!)*
+7. **Run Testing**:
+`python test.py`
+*(Copy the table output into your thesis paper.)*
+
+**You now have every single piece of the puzzle. Would you like me to help you write a professional caption or summary for your GitHub repository?**
